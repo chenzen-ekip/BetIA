@@ -4,6 +4,7 @@ import { client, SYSTEM_PROMPT } from '@/lib/openai'
 import { searchWithSerper, formatSearchResults, formatSearchResultsWithTriangulation, searchTransfermarktComplete } from '@/lib/serper'
 import { getMatchData } from '@/lib/football'
 import { checkRateLimit } from '@/lib/rateLimit'
+import { prisma } from '@/lib/prisma'
 
 /**
  * Extrait le nom d'équipe du message pour les recherches ciblées
@@ -345,7 +346,7 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    const { message, conversationHistory } = await request.json()
+    const { message, conversationHistory, conversationId: existingConversationId } = await request.json()
 
     if (!message || typeof message !== 'string') {
       return new Response(
@@ -739,6 +740,51 @@ ${SYSTEM_PROMPT}`
     // Ajouter le nouveau message
     messages.push({ role: 'user', content: userMessage })
 
+    // Gérer la conversation et sauvegarder le message utilisateur
+    let conversationId = existingConversationId
+    
+    // Si pas de conversationId, créer une nouvelle conversation
+    if (!conversationId) {
+      const title = message.substring(0, 50).trim() || 'Nouvelle conversation'
+      const newConversation = await prisma.conversation.create({
+        data: {
+          userId,
+          title,
+        },
+      })
+      conversationId = newConversation.id
+    } else {
+      // Vérifier que la conversation appartient à l'utilisateur
+      const conversation = await prisma.conversation.findFirst({
+        where: {
+          id: conversationId,
+          userId,
+        },
+      })
+      
+      if (!conversation) {
+        return new Response(
+          JSON.stringify({ error: 'Conversation non trouvée ou non autorisée' }),
+          { status: 404, headers: { 'Content-Type': 'application/json' } }
+        )
+      }
+    }
+
+    // Sauvegarder le message utilisateur
+    await prisma.message.create({
+      data: {
+        conversationId,
+        role: 'user',
+        content: message.trim(), // Sauvegarder le message original, pas avec le contexte web
+      },
+    })
+
+    // Mettre à jour la date de modification de la conversation
+    await prisma.conversation.update({
+      where: { id: conversationId },
+      data: { updatedAt: new Date() },
+    })
+
     // Vérifier que la clé API est configurée
     if (!process.env.OPENAI_API_KEY) {
       return new Response(
@@ -760,16 +806,42 @@ ${SYSTEM_PROMPT}`
 
     // Créer un ReadableStream pour le streaming
     const encoder = new TextEncoder()
+    let assistantResponse = '' // Accumuler la réponse complète pour la sauvegarder
+    
     const readable = new ReadableStream({
       async start(controller) {
         try {
           for await (const chunk of stream) {
             const content = chunk.choices[0]?.delta?.content || ''
             if (content) {
+              assistantResponse += content // Accumuler le contenu
               const data = JSON.stringify({ content })
               controller.enqueue(encoder.encode(`data: ${data}\n\n`))
             }
           }
+          
+          // Sauvegarder la réponse de l'IA une fois le stream terminé
+          if (assistantResponse.trim() && conversationId) {
+            try {
+              await prisma.message.create({
+                data: {
+                  conversationId,
+                  role: 'assistant',
+                  content: assistantResponse.trim(),
+                },
+              })
+              
+              // Mettre à jour la date de modification de la conversation
+              await prisma.conversation.update({
+                where: { id: conversationId },
+                data: { updatedAt: new Date() },
+              })
+            } catch (dbError) {
+              console.error('Erreur sauvegarde message assistant:', dbError)
+              // Ne pas bloquer la réponse si la sauvegarde échoue
+            }
+          }
+          
           controller.enqueue(encoder.encode('data: [DONE]\n\n'))
           controller.close()
         } catch (error) {
@@ -784,6 +856,7 @@ ${SYSTEM_PROMPT}`
         'Content-Type': 'text/event-stream',
         'Cache-Control': 'no-cache',
         Connection: 'keep-alive',
+        'x-conversation-id': conversationId, // Retourner le conversationId dans les headers
       },
     })
   } catch (error: any) {

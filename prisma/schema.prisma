@@ -54,23 +54,23 @@ model VerificationToken {
 }
 
 model Conversation {
-  id        String   @id @default(cuid())
-  userId    String   // Clerk user ID
-  title     String
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  id        String    @id @default(cuid())
+  userId    String    // ID de l'utilisateur Clerk
+  title     String    // Titre de la conversation (ex: "PSG vs OM")
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
   messages  Message[]
-  
+
   @@index([userId])
 }
 
 model Message {
   id             String       @id @default(cuid())
-  conversationId String
-  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
-  role           String       // 'user' | 'assistant'
+  role           String       // "user" ou "assistant"
   content        String       @db.Text
   createdAt      DateTime     @default(now())
-  
+  conversationId String
+  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
   @@index([conversationId])
 }
