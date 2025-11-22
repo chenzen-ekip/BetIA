@@ -74,7 +74,7 @@ export default function Sidebar() {
       variants={sidebarVariants}
       initial="hidden"
       animate="visible"
-      className="hidden lg:flex flex-col h-full w-[280px] bg-[#0a0a0a] border-r border-[#2a2a2a] p-4 gap-4"
+      className="hidden md:flex flex-col h-full w-[280px] bg-[#0a0a0a] border-r border-[#2a2a2a] p-4 gap-4"
     >
       {/* Logo/Title */}
       <div className="text-xl font-semibold text-white mb-2">

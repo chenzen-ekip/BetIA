@@ -1,4 +1,4 @@
-import type { Metadata } from 'next'
+import type { Metadata, Viewport } from 'next'
 import './globals.css'
 import { Providers } from './providers'
 import { ClerkProvider } from '@clerk/nextjs'
@@ -8,6 +8,23 @@ import '@/lib/env' // Valider les variables d'environnement au démarrage
 export const metadata: Metadata = {
   title: 'Sports Betting Assistant - ChatGPT des Paris Sportifs',
   description: 'Assistant conversationnel expert en paris sportifs et analyse de football',
+  manifest: '/manifest.json',
+  appleWebApp: {
+    capable: true,
+    statusBarStyle: 'black',
+    title: 'BetIA',
+  },
+  formatDetection: {
+    telephone: false,
+  },
+}
+
+export const viewport: Viewport = {
+  width: 'device-width',
+  initialScale: 1,
+  maximumScale: 1,
+  userScalable: false,
+  themeColor: '#000000',
 }
 
 export default function RootLayout({
@@ -18,7 +35,7 @@ export default function RootLayout({
   return (
     <ClerkProvider>
       <html lang="fr">
-        <body>
+        <body className="overflow-x-hidden">
           {/* Barre de menu */}
           <nav className="w-full border-b border-[#2a2a2a] bg-[#0a0a0a] px-6 py-4 flex items-center justify-between">
             <div className="text-xl font-semibold text-white">
