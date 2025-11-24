@@ -3,6 +3,8 @@
  * Fournit des données officielles sur les équipes, matchs, blessures et cotes
  */
 
+import { findTeam, findTeamExact } from './fuzzy-teams'
+
 const RAPIDAPI_KEY = process.env.RAPIDAPI_KEY
 const RAPIDAPI_HOST = 'api-football-v1.p.rapidapi.com'
 const BASE_URL = 'https://api-football-v1.p.rapidapi.com/v3'
@@ -149,29 +151,49 @@ async function apiRequest(endpoint: string): Promise<any> {
 }
 
 /**
- * Cherche l'ID d'une équipe via l'endpoint /teams
- * @param query Nom de l'équipe à rechercher (ex: "Bayern Munich", "PSG")
- * @returns L'ID de l'équipe ou null si non trouvée
+ * Cherche l'ID et le nom d'une équipe via recherche floue puis API-Football
+ * @param query Nom de l'équipe à rechercher (ex: "Bayern Munich", "PSG", "Dortumund")
+ * @returns L'ID et le nom de l'équipe ou null si non trouvée
  */
-export async function searchTeam(query: string): Promise<number | null> {
+export async function searchTeam(query: string): Promise<{ id: number; name: string } | null> {
   try {
-    // Nettoyer la requête (enlever accents, normaliser)
+    // Étape 1 : Recherche exacte dans la liste locale
+    const exactMatch = findTeamExact(query)
+    if (exactMatch) {
+      console.log(`✅ Correspondance exacte trouvée: "${query}" → ${exactMatch.name} (ID: ${exactMatch.id})`)
+      return exactMatch
+    }
+
+    // Étape 2 : Recherche floue (tolère les fautes de frappe)
+    const fuzzyMatch = findTeam(query)
+    if (fuzzyMatch) {
+      console.log(`🔍 Correspondance floue trouvée: "${query}" → ${fuzzyMatch.name} (ID: ${fuzzyMatch.id})`)
+      return fuzzyMatch
+    }
+
+    // Étape 3 : Si aucune correspondance locale, essayer l'API-Football directement
+    // (pour les équipes qui ne sont pas dans notre liste)
     const cleanQuery = query
       .trim()
       .toLowerCase()
       .normalize('NFD')
       .replace(/[\u0300-\u036f]/g, '')
 
-    // Chercher l'équipe
+    console.log(`📡 Aucune correspondance locale, recherche via API-Football: "${cleanQuery}"`)
     const data = await apiRequest(`/teams?search=${encodeURIComponent(cleanQuery)}`)
 
     if (!data || !data.response || data.response.length === 0) {
+      console.warn(`⚠️ Aucune équipe trouvée pour "${query}" (ni locale, ni API)`)
       return null
     }
 
     // Prendre le premier résultat (le plus probable)
     const team = data.response[0].team
-    return team.id
+    console.log(`✅ Équipe trouvée via API: "${query}" → ${team.name} (ID: ${team.id})`)
+    return {
+      id: team.id,
+      name: team.name,
+    }
   } catch (error: any) {
     console.warn(`Erreur searchTeam pour "${query}":`, error.message)
     return null
@@ -473,13 +495,16 @@ export async function getFixtureDetails(
  */
 export async function getMatchData(teamName: string): Promise<MatchData | null> {
   try {
-    // Étape 1 : Chercher l'ID de l'équipe
-    const teamId = await searchTeam(teamName)
+    // Étape 1 : Chercher l'ID et le nom correct de l'équipe (avec recherche floue)
+    const teamResult = await searchTeam(teamName)
 
-    if (!teamId) {
+    if (!teamResult) {
       console.warn(`Équipe "${teamName}" non trouvée`)
       return null
     }
+
+    const teamId = teamResult.id
+    const correctTeamName = teamResult.name // Utiliser le nom correct trouvé (peut être différent de l'input)
 
     // Étape 2 : Trouver le prochain match
     const fixture = await getNextFixture(teamId)
