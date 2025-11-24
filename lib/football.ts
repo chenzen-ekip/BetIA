@@ -70,6 +70,8 @@ interface MatchData {
     awayTeam: string
     league: string
     country: string
+    leagueId: number
+    season: number
   }
   odds: {
     homeWin: string | null
@@ -85,6 +87,34 @@ interface MatchData {
     reason: string
   }>
   status: 'upcoming' | 'finished' | 'live'
+  advancedStats: {
+    xg: {
+      home: number | null
+      away: number | null
+    }
+    teamStats: {
+      home: {
+        goalsForPerMatch: number | null
+        goalsAgainstPerMatch: number | null
+        cleanSheets: number | null
+        matchesPlayed: number | null
+      }
+      away: {
+        goalsForPerMatch: number | null
+        goalsAgainstPerMatch: number | null
+        cleanSheets: number | null
+        matchesPlayed: number | null
+      }
+    }
+    h2h: Array<{
+      date: string
+      homeTeam: string
+      awayTeam: string
+      homeScore: number | null
+      awayScore: number | null
+      homeWinner: boolean | null
+    }>
+  }
 }
 
 /**
@@ -198,13 +228,122 @@ export async function getNextFixture(teamId: number): Promise<Fixture | null> {
 }
 
 /**
- * Récupère les détails d'un match (blessures, cotes)
+ * Récupère les statistiques d'une équipe pour une saison donnée
+ * @param teamId ID de l'équipe
+ * @param leagueId ID de la ligue
+ * @param season Année de la saison (ex: 2024)
+ * @returns Les statistiques de l'équipe ou null
+ */
+async function getTeamSeasonStats(teamId: number, leagueId: number, season: number): Promise<{
+  goalsForPerMatch: number | null
+  goalsAgainstPerMatch: number | null
+  cleanSheets: number | null
+  matchesPlayed: number | null
+} | null> {
+  try {
+    const data = await apiRequest(`/teams/statistics?team=${teamId}&league=${leagueId}&season=${season}`)
+    
+    if (!data || !data.response || !data.response[0]) {
+      return null
+    }
+
+    const stats = data.response[0]
+    const matchesPlayed = stats.fixtures?.played?.total || 0
+    const goalsFor = stats.goals?.for?.total?.total || 0
+    const goalsAgainst = stats.goals?.against?.total?.total || 0
+    const cleanSheets = stats.clean_sheet?.total || 0
+
+    return {
+      goalsForPerMatch: matchesPlayed > 0 ? Number((goalsFor / matchesPlayed).toFixed(2)) : null,
+      goalsAgainstPerMatch: matchesPlayed > 0 ? Number((goalsAgainst / matchesPlayed).toFixed(2)) : null,
+      cleanSheets: cleanSheets,
+      matchesPlayed: matchesPlayed,
+    }
+  } catch (error: any) {
+    console.warn(`Erreur getTeamSeasonStats pour teamId ${teamId}:`, error.message)
+    return null
+  }
+}
+
+/**
+ * Récupère les 5 dernières confrontations directes entre deux équipes
+ * @param team1Id ID de la première équipe
+ * @param team2Id ID de la deuxième équipe
+ * @returns Les 5 dernières confrontations ou un tableau vide
+ */
+async function getH2HMatches(team1Id: number, team2Id: number): Promise<Array<{
+  date: string
+  homeTeam: string
+  awayTeam: string
+  homeScore: number | null
+  awayScore: number | null
+  homeWinner: boolean | null
+}>> {
+  try {
+    const data = await apiRequest(`/fixtures/headtohead?h2h=${team1Id}-${team2Id}&last=5`)
+    
+    if (!data || !data.response || data.response.length === 0) {
+      return []
+    }
+
+    return data.response.slice(0, 5).map((fixture: any) => ({
+      date: fixture.fixture?.date || '',
+      homeTeam: fixture.teams?.home?.name || '',
+      awayTeam: fixture.teams?.away?.name || '',
+      homeScore: fixture.goals?.home ?? null,
+      awayScore: fixture.goals?.away ?? null,
+      homeWinner: fixture.teams?.home?.winner ?? null,
+    }))
+  } catch (error: any) {
+    console.warn(`Erreur getH2HMatches pour ${team1Id} vs ${team2Id}:`, error.message)
+    return []
+  }
+}
+
+/**
+ * Récupère les détails d'un match (blessures, cotes, xG, stats avancées)
  * @param fixtureId ID du match
+ * @param homeTeamId ID de l'équipe à domicile
+ * @param awayTeamId ID de l'équipe à l'extérieur
+ * @param leagueId ID de la ligue
+ * @param season Année de la saison
  * @returns Les détails du match ou null
  */
-export async function getFixtureDetails(fixtureId: number): Promise<{
+export async function getFixtureDetails(
+  fixtureId: number,
+  homeTeamId?: number,
+  awayTeamId?: number,
+  leagueId?: number,
+  season?: number
+): Promise<{
   injuries: Injury[]
   odds: Odds | null
+  xg: {
+    home: number | null
+    away: number | null
+  }
+  teamStats: {
+    home: {
+      goalsForPerMatch: number | null
+      goalsAgainstPerMatch: number | null
+      cleanSheets: number | null
+      matchesPlayed: number | null
+    }
+    away: {
+      goalsForPerMatch: number | null
+      goalsAgainstPerMatch: number | null
+      cleanSheets: number | null
+      matchesPlayed: number | null
+    }
+  }
+  h2h: Array<{
+    date: string
+    homeTeam: string
+    awayTeam: string
+    homeScore: number | null
+    awayScore: number | null
+    homeWinner: boolean | null
+  }>
 } | null> {
   try {
     // Récupérer les blessures
@@ -220,9 +359,106 @@ export async function getFixtureDetails(fixtureId: number): Promise<{
       odds = oddsData.response[0]
     }
 
+    // Récupérer les statistiques du match (pour les xG)
+    let xgHome: number | null = null
+    let xgAway: number | null = null
+    
+    try {
+      const statsData = await apiRequest(`/fixtures/statistics?fixture=${fixtureId}`)
+      if (statsData?.response && statsData.response.length > 0) {
+        // Les statistiques sont organisées par équipe (home et away)
+        const homeStats = statsData.response.find((stat: any) => stat.team?.id === homeTeamId)
+        const awayStats = statsData.response.find((stat: any) => stat.team?.id === awayTeamId)
+        
+        // Chercher les xG dans les statistiques
+        if (homeStats?.statistics) {
+          const xgStat = homeStats.statistics.find((stat: any) => 
+            stat.type === 'Expected Goals' || stat.type === 'expected_goals' || stat.type === 'xG'
+          )
+          if (xgStat) {
+            xgHome = parseFloat(xgStat.value) || null
+          }
+        }
+        
+        if (awayStats?.statistics) {
+          const xgStat = awayStats.statistics.find((stat: any) => 
+            stat.type === 'Expected Goals' || stat.type === 'expected_goals' || stat.type === 'xG'
+          )
+          if (xgStat) {
+            xgAway = parseFloat(xgStat.value) || null
+          }
+        }
+      }
+    } catch (error: any) {
+      console.warn(`Erreur récupération xG pour fixtureId ${fixtureId}:`, error.message)
+    }
+
+    // Récupérer les stats de la saison pour chaque équipe
+    let homeTeamStats = {
+      goalsForPerMatch: null as number | null,
+      goalsAgainstPerMatch: null as number | null,
+      cleanSheets: null as number | null,
+      matchesPlayed: null as number | null,
+    }
+    let awayTeamStats = {
+      goalsForPerMatch: null as number | null,
+      goalsAgainstPerMatch: null as number | null,
+      cleanSheets: null as number | null,
+      matchesPlayed: null as number | null,
+    }
+
+    if (homeTeamId && leagueId && season) {
+      try {
+        const stats = await getTeamSeasonStats(homeTeamId, leagueId, season)
+        if (stats) {
+          homeTeamStats = stats
+        }
+      } catch (error: any) {
+        console.warn(`Erreur récupération stats équipe domicile ${homeTeamId}:`, error.message)
+      }
+    }
+
+    if (awayTeamId && leagueId && season) {
+      try {
+        const stats = await getTeamSeasonStats(awayTeamId, leagueId, season)
+        if (stats) {
+          awayTeamStats = stats
+        }
+      } catch (error: any) {
+        console.warn(`Erreur récupération stats équipe extérieure ${awayTeamId}:`, error.message)
+      }
+    }
+
+    // Récupérer les 5 dernières confrontations H2H
+    let h2h: Array<{
+      date: string
+      homeTeam: string
+      awayTeam: string
+      homeScore: number | null
+      awayScore: number | null
+      homeWinner: boolean | null
+    }> = []
+
+    if (homeTeamId && awayTeamId) {
+      try {
+        h2h = await getH2HMatches(homeTeamId, awayTeamId)
+      } catch (error: any) {
+        console.warn(`Erreur récupération H2H pour ${homeTeamId} vs ${awayTeamId}:`, error.message)
+      }
+    }
+
     return {
       injuries,
       odds,
+      xg: {
+        home: xgHome,
+        away: xgAway,
+      },
+      teamStats: {
+        home: homeTeamStats,
+        away: awayTeamStats,
+      },
+      h2h,
     }
   } catch (error: any) {
     console.warn(`Erreur getFixtureDetails pour fixtureId ${fixtureId}:`, error.message)
@@ -253,8 +489,21 @@ export async function getMatchData(teamName: string): Promise<MatchData | null> 
       return null
     }
 
-    // Étape 3 : Récupérer les détails (blessures, cotes)
-    const details = await getFixtureDetails(fixture.id)
+    // Extraire la saison depuis la date du match (année de début de saison)
+    const matchDate = new Date(fixture.date)
+    const season = matchDate.getFullYear()
+    // Si le match est après juillet, c'est la saison qui commence cette année
+    // Sinon, c'est la saison qui a commencé l'année précédente
+    const seasonYear = matchDate.getMonth() >= 6 ? season : season - 1
+
+    // Étape 3 : Récupérer les détails (blessures, cotes, xG, stats avancées)
+    const details = await getFixtureDetails(
+      fixture.id,
+      fixture.teams.home.id,
+      fixture.teams.away.id,
+      fixture.league.id,
+      seasonYear
+    )
 
     // Formater les cotes
     let odds = {
@@ -306,7 +555,6 @@ export async function getMatchData(teamName: string): Promise<MatchData | null> 
     }))
 
     // Déterminer le statut du match
-    const matchDate = new Date(fixture.date)
     const now = new Date()
     let status: 'upcoming' | 'finished' | 'live' = 'upcoming'
 
@@ -324,10 +572,30 @@ export async function getMatchData(teamName: string): Promise<MatchData | null> 
         awayTeam: fixture.teams.away.name,
         league: fixture.league.name,
         country: fixture.league.country,
+        leagueId: fixture.league.id,
+        season: seasonYear,
       },
       odds,
       injuries,
       status,
+      advancedStats: {
+        xg: details?.xg || { home: null, away: null },
+        teamStats: details?.teamStats || {
+          home: {
+            goalsForPerMatch: null,
+            goalsAgainstPerMatch: null,
+            cleanSheets: null,
+            matchesPlayed: null,
+          },
+          away: {
+            goalsForPerMatch: null,
+            goalsAgainstPerMatch: null,
+            cleanSheets: null,
+            matchesPlayed: null,
+          },
+        },
+        h2h: details?.h2h || [],
+      },
     }
   } catch (error: any) {
     console.warn(`Erreur getMatchData pour "${teamName}":`, error.message)
