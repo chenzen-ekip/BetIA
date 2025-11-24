@@ -368,54 +368,76 @@ export async function getFixtureDetails(
   }>
 } | null> {
   try {
-    // Récupérer les blessures
-    const injuriesData = await apiRequest(`/injuries?fixture=${fixtureId}`)
+    // OPTIMISATION 1 : Requêtes indépendantes en parallèle (blessures, cotes, stats)
+    const [injuriesData, oddsData, statsData] = await Promise.all([
+      apiRequest(`/injuries?fixture=${fixtureId}`),
+      apiRequest(`/odds?fixture=${fixtureId}`),
+      apiRequest(`/fixtures/statistics?fixture=${fixtureId}`).catch(() => null), // Catch pour ne pas bloquer si échec
+    ])
+
     const injuries: Injury[] = injuriesData?.response || []
 
-    // Récupérer les cotes (premier bookmaker disponible)
-    const oddsData = await apiRequest(`/odds?fixture=${fixtureId}`)
     let odds: Odds | null = null
-
     if (oddsData?.response && oddsData.response.length > 0) {
-      // Prendre le premier bookmaker (généralement le plus fiable)
       odds = oddsData.response[0]
     }
 
-    // Récupérer les statistiques du match (pour les xG)
+    // Extraire les xG des statistiques
     let xgHome: number | null = null
     let xgAway: number | null = null
     
-    try {
-      const statsData = await apiRequest(`/fixtures/statistics?fixture=${fixtureId}`)
-      if (statsData?.response && statsData.response.length > 0) {
-        // Les statistiques sont organisées par équipe (home et away)
-        const homeStats = statsData.response.find((stat: any) => stat.team?.id === homeTeamId)
-        const awayStats = statsData.response.find((stat: any) => stat.team?.id === awayTeamId)
-        
-        // Chercher les xG dans les statistiques
-        if (homeStats?.statistics) {
-          const xgStat = homeStats.statistics.find((stat: any) => 
-            stat.type === 'Expected Goals' || stat.type === 'expected_goals' || stat.type === 'xG'
-          )
-          if (xgStat) {
-            xgHome = parseFloat(xgStat.value) || null
-          }
-        }
-        
-        if (awayStats?.statistics) {
-          const xgStat = awayStats.statistics.find((stat: any) => 
-            stat.type === 'Expected Goals' || stat.type === 'expected_goals' || stat.type === 'xG'
-          )
-          if (xgStat) {
-            xgAway = parseFloat(xgStat.value) || null
-          }
+    if (statsData?.response && statsData.response.length > 0) {
+      const homeStats = statsData.response.find((stat: any) => stat.team?.id === homeTeamId)
+      const awayStats = statsData.response.find((stat: any) => stat.team?.id === awayTeamId)
+      
+      if (homeStats?.statistics) {
+        const xgStat = homeStats.statistics.find((stat: any) => 
+          stat.type === 'Expected Goals' || stat.type === 'expected_goals' || stat.type === 'xG'
+        )
+        if (xgStat) {
+          xgHome = parseFloat(xgStat.value) || null
         }
       }
-    } catch (error: any) {
-      console.warn(`Erreur récupération xG pour fixtureId ${fixtureId}:`, error.message)
+      
+      if (awayStats?.statistics) {
+        const xgStat = awayStats.statistics.find((stat: any) => 
+          stat.type === 'Expected Goals' || stat.type === 'expected_goals' || stat.type === 'xG'
+        )
+        if (xgStat) {
+          xgAway = parseFloat(xgStat.value) || null
+        }
+      }
     }
 
-    // Récupérer les stats de la saison pour chaque équipe
+    // OPTIMISATION 2 : Stats de saison et H2H en parallèle (si les paramètres sont disponibles)
+    const promises: Promise<any>[] = []
+    const promiseIndices: { homeStats?: number; awayStats?: number; h2h?: number } = {}
+
+    if (homeTeamId && leagueId && season) {
+      promiseIndices.homeStats = promises.length
+      promises.push(
+        getTeamSeasonStats(homeTeamId, leagueId, season).catch(() => null)
+      )
+    }
+
+    if (awayTeamId && leagueId && season) {
+      promiseIndices.awayStats = promises.length
+      promises.push(
+        getTeamSeasonStats(awayTeamId, leagueId, season).catch(() => null)
+      )
+    }
+
+    if (homeTeamId && awayTeamId) {
+      promiseIndices.h2h = promises.length
+      promises.push(
+        getH2HMatches(homeTeamId, awayTeamId).catch(() => [])
+      )
+    }
+
+    // Exécuter toutes les promesses en parallèle
+    const results = await Promise.all(promises)
+
+    // Extraire les résultats
     let homeTeamStats = {
       goalsForPerMatch: null as number | null,
       goalsAgainstPerMatch: null as number | null,
@@ -428,30 +450,6 @@ export async function getFixtureDetails(
       cleanSheets: null as number | null,
       matchesPlayed: null as number | null,
     }
-
-    if (homeTeamId && leagueId && season) {
-      try {
-        const stats = await getTeamSeasonStats(homeTeamId, leagueId, season)
-        if (stats) {
-          homeTeamStats = stats
-        }
-      } catch (error: any) {
-        console.warn(`Erreur récupération stats équipe domicile ${homeTeamId}:`, error.message)
-      }
-    }
-
-    if (awayTeamId && leagueId && season) {
-      try {
-        const stats = await getTeamSeasonStats(awayTeamId, leagueId, season)
-        if (stats) {
-          awayTeamStats = stats
-        }
-      } catch (error: any) {
-        console.warn(`Erreur récupération stats équipe extérieure ${awayTeamId}:`, error.message)
-      }
-    }
-
-    // Récupérer les 5 dernières confrontations H2H
     let h2h: Array<{
       date: string
       homeTeam: string
@@ -461,12 +459,16 @@ export async function getFixtureDetails(
       homeWinner: boolean | null
     }> = []
 
-    if (homeTeamId && awayTeamId) {
-      try {
-        h2h = await getH2HMatches(homeTeamId, awayTeamId)
-      } catch (error: any) {
-        console.warn(`Erreur récupération H2H pour ${homeTeamId} vs ${awayTeamId}:`, error.message)
-      }
+    if (promiseIndices.homeStats !== undefined && results[promiseIndices.homeStats]) {
+      homeTeamStats = results[promiseIndices.homeStats] || homeTeamStats
+    }
+
+    if (promiseIndices.awayStats !== undefined && results[promiseIndices.awayStats]) {
+      awayTeamStats = results[promiseIndices.awayStats] || awayTeamStats
+    }
+
+    if (promiseIndices.h2h !== undefined && results[promiseIndices.h2h]) {
+      h2h = results[promiseIndices.h2h] || []
     }
 
     return {
