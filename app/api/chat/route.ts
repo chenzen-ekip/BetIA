@@ -844,13 +844,14 @@ ${SYSTEM_PROMPT}`
     }
 
     // Créer le stream OpenAI
-    // Temperature réduite pour plus de cohérence dans les pronostics
+    // Configuration déterministe : température à 0 et seed fixe pour des réponses 100% stables
     const stream = await client.chat.completions.create({
       model: 'gpt-4o-mini',
       messages: messages as any,
-      temperature: 0.3, // Réduit de 0.7 à 0.3 pour plus de cohérence et moins de variabilité
+      temperature: 0.0, // Température à 0 pour des réponses 100% déterministes
+      seed: 1234, // Seed fixe pour garantir la même réponse aux mêmes données
       max_tokens: 800, // Réduit pour des réponses plus concises
-      top_p: 0.8, // Réduit de 0.9 à 0.8 pour plus de déterminisme
+      top_p: 1.0, // Avec temperature 0, top_p doit être à 1.0 pour être cohérent
       stream: true,
     })
 
