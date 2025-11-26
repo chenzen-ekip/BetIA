@@ -33,8 +33,23 @@ export class VisualScraperService {
      */
     private static async analyzeSite(site: { name: string; domain: string }, homeTeam: string, awayTeam: string): Promise<ExpertPrediction> {
         try {
-            // 1. Trouver l'URL du match (Deep Link)
-            const query = `site:${site.domain} prediction ${homeTeam} vs ${awayTeam}`
+            // 1. Trouver l'URL du match (Deep Link) avec des requêtes spécifiques
+            let query = ''
+            switch (site.name) {
+                case 'Forebet':
+                    query = `site:forebet.com prediction ${homeTeam} vs ${awayTeam}`
+                    break
+                case 'WinDrawWin':
+                    query = `site:windrawwin.com prediction ${homeTeam} vs ${awayTeam}`
+                    break
+                case 'PredictZ':
+                    query = `site:predictz.com ${homeTeam} vs ${awayTeam} prediction`
+                    break
+                default:
+                    query = `site:${site.domain} prediction ${homeTeam} vs ${awayTeam}`
+            }
+
+            console.log(`🔍 Recherche Google pour ${site.name}: "${query}"`)
             const searchResults = await searchWithSerper(query)
 
             const matchUrl = searchResults?.organic?.[0]?.link
@@ -48,9 +63,12 @@ export class VisualScraperService {
 
             // 2. Capture d'écran (ScreenshotOne)
             const screenshotUrl = this.generateScreenshotUrl(matchUrl)
+            console.log(`📸 Screenshot URL générée pour ${site.name} (options anti-pub activées)`)
 
             // 3. Analyse Vision (GPT-4o)
             const prediction = await this.analyzeScreenshotWithGPT(screenshotUrl, site.name, homeTeam, awayTeam)
+
+            console.log(`🧠 Analyse Vision pour ${site.name}:`, prediction)
 
             return {
                 site: site.name,
@@ -79,14 +97,16 @@ export class VisualScraperService {
             url: targetUrl,
             full_page: 'false',
             viewport_width: '1280',
-            viewport_height: '1200', // Assez haut pour voir le tableau principal
+            viewport_height: '1500', // Un peu plus haut pour être sûr d'avoir le tableau
             device_scale_factor: '1',
             format: 'jpg',
             image_quality: '80',
             block_ads: 'true',
             block_cookie_banners: 'true',
             block_trackers: 'true',
-            wait_for_selector: 'body', // Attendre que le body soit chargé
+            wait_for_network_idle: 'true', // Important pour charger toute la page
+            cache: 'false', // Éviter le cache pour avoir la dernière version
+            cache_ttl: '0'
         })
 
         return `https://api.screenshotone.com/take?${params.toString()}`
