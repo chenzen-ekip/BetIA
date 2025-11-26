@@ -5,6 +5,21 @@ import { searchWithSerper, formatSearchResults, formatSearchResultsWithTriangula
 import { getMatchData } from '@/lib/football'
 import { checkRateLimit } from '@/lib/rateLimit'
 import { prisma } from '@/lib/prisma'
+import { createHash } from 'crypto'
+
+/**
+ * Génère un hash pour le cache à partir du message utilisateur nettoyé
+ */
+function generateQueryHash(message: string): string {
+  // Nettoyer le message : minuscules, trim, enlever espaces multiples
+  const cleanedMessage = message
+    .toLowerCase()
+    .trim()
+    .replace(/\s+/g, ' ') // Remplacer espaces multiples par un seul espace
+  
+  // Créer un hash SHA-256
+  return createHash('sha256').update(cleanedMessage).digest('hex')
+}
 
 /**
  * Extrait le nom d'équipe du message pour les recherches ciblées
@@ -787,6 +802,131 @@ ${SYSTEM_PROMPT}`
       ? `${message}\n\n${webSearchContext}`
       : message
 
+    // GÉNÉRER LE HASH POUR LE CACHE (basé sur le message original, pas avec le contexte web)
+    // Le contexte web peut varier, donc on cache uniquement sur la question de base
+    const queryHash = generateQueryHash(message)
+
+    // VÉRIFIER LE CACHE AVANT D'APPELER OPENAI
+    // Vérifier que prisma est bien initialisé
+    if (!prisma) {
+      console.error('❌ Erreur: prisma n\'est pas initialisé')
+      return new Response(
+        JSON.stringify({ error: 'Erreur de configuration de la base de données' }),
+        { status: 500, headers: { 'Content-Type': 'application/json' } }
+      )
+    }
+
+    let cachedResponse = null
+    try {
+      // Vérifier si le modèle AnalysisCache existe (au cas où le client Prisma n'a pas été régénéré)
+      if (prisma.analysisCache) {
+        cachedResponse = await prisma.analysisCache.findUnique({
+          where: { queryHash },
+        })
+      } else {
+        console.warn('⚠️ Le modèle AnalysisCache n\'est pas disponible. Lancez: npx prisma generate')
+      }
+    } catch (error: any) {
+      console.warn('⚠️ Erreur lors de la vérification du cache:', error.message)
+      // Continuer sans cache si erreur
+      cachedResponse = null
+    }
+
+    // Si une réponse en cache existe et n'est pas expirée
+    if (cachedResponse && cachedResponse.expiresAt > new Date()) {
+      console.log(`✅ Cache hit pour queryHash: ${queryHash.substring(0, 8)}...`)
+      
+      // Sauvegarder le message utilisateur et la réponse du cache
+      let conversationId = existingConversationId
+      
+      if (!conversationId) {
+        const title = message.substring(0, 50).trim() || 'Nouvelle conversation'
+        const newConversation = await prisma.conversation.create({
+          data: {
+            userId,
+            title,
+          },
+        })
+        conversationId = newConversation.id
+      } else {
+        const conversation = await prisma.conversation.findFirst({
+          where: {
+            id: conversationId,
+            userId,
+          },
+        })
+        
+        if (!conversation) {
+          return new Response(
+            JSON.stringify({ error: 'Conversation non trouvée ou non autorisée' }),
+            { status: 404, headers: { 'Content-Type': 'application/json' } }
+          )
+        }
+      }
+
+      // Sauvegarder le message utilisateur
+      await prisma.message.create({
+        data: {
+          conversationId,
+          role: 'user',
+          content: message.trim(),
+        },
+      })
+
+      // Sauvegarder la réponse du cache
+      await prisma.message.create({
+        data: {
+          conversationId,
+          role: 'assistant',
+          content: cachedResponse.response,
+        },
+      })
+
+      // Mettre à jour la date de modification
+      await prisma.conversation.update({
+        where: { id: conversationId },
+        data: { updatedAt: new Date() },
+      })
+
+      // Simuler un stream avec la réponse du cache
+      const encoder = new TextEncoder()
+      const cachedContent = cachedResponse.response
+      
+      // Diviser la réponse en chunks pour simuler le streaming
+      const chunkSize = 20 // Caractères par chunk
+      const readable = new ReadableStream({
+        async start(controller) {
+          try {
+            for (let i = 0; i < cachedContent.length; i += chunkSize) {
+              const chunk = cachedContent.slice(i, i + chunkSize)
+              const data = JSON.stringify({ content: chunk })
+              controller.enqueue(encoder.encode(`data: ${data}\n\n`))
+              // Petit délai pour simuler le streaming
+              await new Promise(resolve => setTimeout(resolve, 10))
+            }
+            controller.enqueue(encoder.encode('data: [DONE]\n\n'))
+            controller.close()
+          } catch (error) {
+            console.error('Streaming error (cache):', error)
+            controller.error(error)
+          }
+        },
+      })
+
+      return new Response(readable, {
+        headers: {
+          'Content-Type': 'text/event-stream',
+          'Cache-Control': 'no-cache',
+          Connection: 'keep-alive',
+          'x-conversation-id': conversationId,
+          'x-cache-hit': 'true', // Header pour indiquer que c'est du cache
+        },
+      })
+    }
+
+    // Si pas de cache, continuer avec l'appel OpenAI normal
+    console.log(`❌ Cache miss pour queryHash: ${queryHash.substring(0, 8)}...`)
+
     // Ajouter le nouveau message
     messages.push({ role: 'user', content: userMessage })
 
@@ -887,6 +1027,36 @@ ${SYSTEM_PROMPT}`
                 where: { id: conversationId },
                 data: { updatedAt: new Date() },
               })
+
+              // SAUVEGARDER DANS LE CACHE
+              // Calculer l'expiration : 12 heures plus tard
+              const expiresAt = new Date()
+              expiresAt.setHours(expiresAt.getHours() + 12)
+
+              try {
+                // Vérifier que le modèle AnalysisCache existe avant de sauvegarder
+                if (prisma.analysisCache) {
+                  await prisma.analysisCache.upsert({
+                    where: { queryHash },
+                    update: {
+                      response: assistantResponse.trim(),
+                      expiresAt,
+                      createdAt: new Date(), // Mettre à jour la date de création aussi
+                    },
+                    create: {
+                      queryHash,
+                      response: assistantResponse.trim(),
+                      expiresAt,
+                    },
+                  })
+                  console.log(`💾 Réponse sauvegardée dans le cache (expire dans 12h)`)
+                } else {
+                  console.warn('⚠️ Le modèle AnalysisCache n\'est pas disponible. Lancez: npx prisma generate')
+                }
+              } catch (cacheError: any) {
+                console.error('Erreur sauvegarde cache:', cacheError?.message || cacheError)
+                // Ne pas bloquer si le cache échoue
+              }
             } catch (dbError) {
               console.error('Erreur sauvegarde message assistant:', dbError)
               // Ne pas bloquer la réponse si la sauvegarde échoue

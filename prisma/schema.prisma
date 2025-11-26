@@ -74,3 +74,14 @@ model Message {
 
   @@index([conversationId])
 }
+
+model AnalysisCache {
+  id        String   @id @default(cuid())
+  queryHash String   @unique // Hash ou version nettoyée de la question utilisateur
+  response  String   @db.Text // La réponse complète de l'IA
+  createdAt DateTime @default(now())
+  expiresAt DateTime // Date d'expiration du cache (ex: minuit le soir même)
+
+  @@index([queryHash])
+  @@index([expiresAt])
+}
