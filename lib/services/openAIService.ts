@@ -100,16 +100,17 @@ ${apiFootballData.injuries.length > 0
         let expertSection = ''
         if (expertPredictions && expertPredictions.length > 0) {
             expertSection = `
---- AVIS DES EXPERTS MONDIAUX (VISUAL SCRAPER) ---
+--- AVIS DES EXPERTS MONDIAUX ---
+${expertPredictions.map(p => `${p.site} : ${p.prediction}`).join('\n')}
 
-Voici les pronostics récupérés directement sur les sites d'experts (Forebet, WinDrawWin, etc.) via analyse visuelle :
+--- CONSIGNE DE SYNTHÈSE ---
+Ta mission est de faire la synthèse.
+1. Si ton analyse statistique (API-Football) correspond à l'avis des experts -> C'est un BET EN OR (Confiance Max).
+2. Si les experts ne sont pas d'accord entre eux -> Sois prudent.
+3. Si tes stats contredisent les experts -> Fais confiance à tes stats mais mentionne le désaccord.
 
-${expertPredictions.map(p => `- ✅ ${p.site} : ${p.prediction} (Confiance: ${p.confidence})`).join('\n')}
-
-Utilise ces avis pour CONFIRMER ou NUANCER ton analyse.
-Si tous les experts sont d'accord, mentionne-le comme un "Consensus Fort".
-Si tu n'es pas d'accord avec eux (basé sur les stats), explique pourquoi.
----
+IMPORTANT : Dans ta réponse finale, ajoute TOUJOURS une petite ligne à la fin :
+"👀 **L'œil des Experts :** [Résumé de ce que disent Forebet/WinDrawWin/etc. ex: Forebet et WinDrawWin confirment ce choix.]"
 `
         }
 
