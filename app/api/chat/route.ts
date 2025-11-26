@@ -1,7 +1,6 @@
 import { NextRequest } from 'next/server'
 import { auth } from '@clerk/nextjs/server'
 import { checkRateLimit } from '@/lib/rateLimit'
-import { getMatchData } from '@/lib/football'
 import {
   extractTeamName,
   extractMatchTeams,
@@ -116,8 +115,7 @@ export async function POST(request: NextRequest) {
     const matchTeams = extractMatchTeams(message)
     const teamToSearch = detectedTeam || matchTeams.team1 || matchTeams.team2
 
-    // 5. Récupération des données (Parallélisation)
-    let apiFootballData: any = null
+    // 5. Récupération des données (Mode Agrégateur - "Le Perroquet Expert")
     let expertPredictions: ExpertPrediction[] = []
 
     if (teamToSearch) {
@@ -126,50 +124,21 @@ export async function POST(request: NextRequest) {
         .map(word => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
         .join(' ')
 
-      console.log(`📡 Lancement des recherches pour: "${normalizedTeamName}"`)
+      console.log(`📡 Mode Agrégateur activé pour: "${normalizedTeamName}"`)
 
-      // Préparation des promesses
-      const apiFootballPromise = getMatchData(normalizedTeamName)
-        .catch(error => {
-          console.warn(`❌ Erreur API-Football pour "${teamToSearch}":`, error.message)
-          return null
-        })
-
-      let expertConsensusPromise: Promise<ExpertPrediction[]> = Promise.resolve([])
-
-      // Si on a les deux équipes, on lance le scraper tout de suite
+      // Si on a les deux équipes, on lance le scraper immédiatement
       if (matchTeams.team1 && matchTeams.team2) {
-        console.log(`🕵️‍♂️ Lancement parallèle du Visual Scraper pour ${matchTeams.team1} vs ${matchTeams.team2}`)
-        expertConsensusPromise = VisualScraperService.getExpertConsensus(matchTeams.team1, matchTeams.team2)
-          .catch(error => {
-            console.error('Erreur Visual Scraper:', error)
-            return []
-          })
-      }
-
-      // Exécution parallèle
-      const [apiData, expertData] = await Promise.all([
-        apiFootballPromise,
-        expertConsensusPromise
-      ])
-
-      apiFootballData = apiData
-      expertPredictions = expertData
-
-      // Si le scraper n'a pas tourné (car on avait qu'une seule équipe) mais qu'on a trouvé le match via API
-      if (expertPredictions.length === 0 && apiFootballData && apiFootballData.match) {
-        // On vérifie qu'on n'a pas déjà essayé (cas où on avait les 2 équipes mais le scraper a échoué ou rien trouvé)
-        if (!matchTeams.team1 || !matchTeams.team2) {
-          console.log(`🕵️‍♂️ Lancement séquentiel du Visual Scraper (après API) pour ${apiFootballData.match.homeTeam} vs ${apiFootballData.match.awayTeam}`)
-          try {
-            expertPredictions = await VisualScraperService.getExpertConsensus(
-              apiFootballData.match.homeTeam,
-              apiFootballData.match.awayTeam
-            )
-          } catch (error) {
-            console.error('Erreur Visual Scraper (via API match):', error)
-          }
+        console.log(`🕵️‍♂️ Lancement du Visual Scraper pour ${matchTeams.team1} vs ${matchTeams.team2}`)
+        try {
+          expertPredictions = await VisualScraperService.getExpertConsensus(matchTeams.team1, matchTeams.team2)
+        } catch (error) {
+          console.error('Erreur Visual Scraper:', error)
         }
+      }
+      // Si on a une seule équipe, on ne peut pas deviner l'adversaire sans API Football
+      // On laisse le web search trouver le contexte, et l'IA demandera de préciser si besoin.
+      else {
+        console.log('⚠️ Une seule équipe détectée. Impossible de lancer le scraper sans l\'adversaire (API Football désactivée).')
       }
     }
 
@@ -206,7 +175,6 @@ export async function POST(request: NextRequest) {
       message,
       filteredHistory,
       searchResult,
-      apiFootballData,
       expertPredictions
     )
 
