@@ -37,16 +37,16 @@ export class VisualScraperService {
             let query = ''
             switch (site.name) {
                 case 'Forebet':
-                    query = `site:forebet.com prediction ${homeTeam} vs ${awayTeam}`
+                    query = `site:forebet.com football prediction ${homeTeam} vs ${awayTeam}`
                     break
                 case 'WinDrawWin':
-                    query = `site:windrawwin.com prediction ${homeTeam} vs ${awayTeam}`
+                    query = `site:windrawwin.com football prediction ${homeTeam} vs ${awayTeam}`
                     break
                 case 'PredictZ':
-                    query = `site:predictz.com ${homeTeam} vs ${awayTeam} prediction`
+                    query = `site:predictz.com football ${homeTeam} vs ${awayTeam} prediction`
                     break
                 default:
-                    query = `site:${site.domain} prediction ${homeTeam} vs ${awayTeam}`
+                    query = `site:${site.domain} football prediction ${homeTeam} vs ${awayTeam}`
             }
 
             console.log(`🔍 Recherche Google pour ${site.name}: "${query}"`)
@@ -100,13 +100,7 @@ export class VisualScraperService {
             viewport_height: '1500', // Un peu plus haut pour être sûr d'avoir le tableau
             device_scale_factor: '1',
             format: 'jpg',
-            image_quality: '80',
-            block_ads: 'true',
-            block_cookie_banners: 'true',
-            block_trackers: 'true',
-            wait_for_network_idle: 'true', // Important pour charger toute la page
-            cache: 'false', // Éviter le cache pour avoir la dernière version
-            cache_ttl: '0'
+            image_quality: '80'
         })
 
         return `https://api.screenshotone.com/take?${params.toString()}`
@@ -139,29 +133,49 @@ FORMAT DE SORTIE (JSON SEULEMENT) :
 }
 `
 
-        const response = await client.chat.completions.create({
-            model: 'gpt-4o', // GPT-4o est multimodal (Vision)
-            messages: [
-                {
-                    role: 'user',
-                    content: [
-                        { type: 'text', text: prompt },
-                        {
-                            type: 'image_url',
-                            image_url: {
-                                url: imageUrl,
+        // Download image and convert to base64
+        try {
+            const imageResponse = await fetch(imageUrl)
+            if (!imageResponse.ok) {
+                throw new Error(`Failed to fetch screenshot: ${imageResponse.status}`)
+            }
+
+            const arrayBuffer = await imageResponse.arrayBuffer()
+            const base64Image = Buffer.from(arrayBuffer).toString('base64')
+            const dataUrl = `data:image/jpeg;base64,${base64Image}`
+
+            const response = await client.chat.completions.create({
+                model: 'gpt-4o', // GPT-4o est multimodal (Vision)
+                messages: [
+                    {
+                        role: 'user',
+                        content: [
+                            { type: 'text', text: prompt },
+                            {
+                                type: 'image_url',
+                                image_url: {
+                                    url: dataUrl,
+                                },
                             },
-                        },
-                    ],
-                },
-            ],
-            max_tokens: 300,
-            response_format: { type: 'json_object' }
-        })
+                        ],
+                    },
+                ],
+                max_tokens: 300,
+                response_format: { type: 'json_object' }
+            })
 
-        const content = response.choices[0].message.content
-        if (!content) throw new Error('Réponse vide de GPT-4o Vision')
+            const content = response.choices[0].message.content
+            if (!content) throw new Error('Réponse vide de GPT-4o Vision')
 
-        return JSON.parse(content)
+            return JSON.parse(content)
+        } catch (error) {
+            console.error('Error in analyzeScreenshotWithGPT:', error)
+            return {
+                found: false,
+                prediction_raw: '',
+                prediction_clear: '',
+                score_exact: null
+            }
+        }
     }
 }
