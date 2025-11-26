@@ -34,19 +34,24 @@ export class VisualScraperService {
     private static async analyzeSite(site: { name: string; domain: string }, homeTeam: string, awayTeam: string): Promise<ExpertPrediction> {
         try {
             // 1. Trouver l'URL du match (Deep Link) avec des requêtes spécifiques
+            // Nettoyer les noms d'équipes (enlever FC, CF, etc.)
+            const cleanHome = homeTeam.replace(/\s+(FC|CF|United|City|Madrid|Barcelona)$/i, '').trim()
+            const cleanAway = awayTeam.replace(/\s+(FC|CF|United|City|Madrid|Barcelona)$/i, '').trim()
+
             let query = ''
             switch (site.name) {
                 case 'Forebet':
-                    query = `site:forebet.com football prediction ${homeTeam} vs ${awayTeam}`
+                    query = `site:forebet.com "${homeTeam}" "${awayTeam}" prediction`
                     break
                 case 'WinDrawWin':
-                    query = `site:windrawwin.com football prediction ${homeTeam} vs ${awayTeam}`
+                    // WinDrawWin utilise souvent des URLs avec des tirets
+                    query = `site:windrawwin.com "${cleanHome}" "${cleanAway}" prediction`
                     break
                 case 'PredictZ':
-                    query = `site:predictz.com football ${homeTeam} vs ${awayTeam} prediction`
+                    query = `site:predictz.com "${homeTeam}" "${awayTeam}" prediction`
                     break
                 default:
-                    query = `site:${site.domain} football prediction ${homeTeam} vs ${awayTeam}`
+                    query = `site:${site.domain} "${homeTeam}" "${awayTeam}" prediction`
             }
 
             console.log(`🔍 Recherche Google pour ${site.name}: "${query}"`)
@@ -112,24 +117,50 @@ export class VisualScraperService {
     private static async analyzeScreenshotWithGPT(imageUrl: string, siteName: string, homeTeam: string, awayTeam: string) {
         const prompt = `
 Tu es un assistant expert en lecture de tableaux de paris sportifs.
-Ta mission : Trouver la ligne ou la section du match **${homeTeam} vs ${awayTeam}** dans cette capture d'écran du site ${siteName} et extraire le pronostic.
 
-DICTIONNAIRE DE TRADUCTION OBLIGATOIRE :
-- Colonnes '1', 'Home', 'H' ou un pourcentage élevé à gauche -> Résultat : 'VICTOIRE DOMICILE'.
-- Colonnes 'X', 'Draw', 'D' -> Résultat : 'MATCH NUL'.
-- Colonnes '2', 'Away', 'A' -> Résultat : 'VICTOIRE EXTÉRIEUR'.
-- Symboles 'BTTS', 'GG' (Goal Goal), 'Yes' -> Résultat : 'LES DEUX MARQUENT'.
-- Symboles 'Over 2.5', '+2.5', '>2.5' -> Résultat : 'PLUS DE 2.5 BUTS'.
-- Symboles 'Under 2.5', '-2.5', '<2.5' -> Résultat : 'MOINS DE 2.5 BUTS'.
+CONTEXTE DU MATCH :
+- Équipe à DOMICILE : ${homeTeam}
+- Équipe à L'EXTÉRIEUR : ${awayTeam}
 
-Si tu vois un score exact (ex: 2-1), mentionne-le aussi.
+Ta mission : Trouver la ligne du match **${homeTeam} vs ${awayTeam}** dans cette capture d'écran du site ${siteName} et extraire le pronostic.
+
+INSTRUCTIONS CRITIQUES POUR IDENTIFIER LE PRONOSTIC :
+
+1. **IDENTIFIER LES ÉQUIPES DANS L'IMAGE :**
+   - Cherche les noms "${homeTeam}" et "${awayTeam}" dans l'image
+   - L'équipe à DOMICILE (${homeTeam}) est généralement listée EN PREMIER ou à GAUCHE
+   - L'équipe à L'EXTÉRIEUR (${awayTeam}) est généralement listée EN SECOND ou à DROITE
+
+2. **LIRE LE PRONOSTIC :**
+   - Si tu vois une coche, un pourcentage élevé, ou une mise en évidence sur la colonne "1" ou "Home" -> Le site pronostique ${homeTeam}
+   - Si tu vois une coche, un pourcentage élevé, ou une mise en évidence sur la colonne "2" ou "Away" -> Le site pronostique ${awayTeam}
+   - Si tu vois une coche sur "X" ou "Draw" -> Match nul
+
+3. **TRADUCTION DU PRONOSTIC :**
+   - Si le pronostic favorise ${homeTeam} -> Réponds "VICTOIRE ${homeTeam.toUpperCase()}"
+   - Si le pronostic favorise ${awayTeam} -> Réponds "VICTOIRE ${awayTeam.toUpperCase()}"
+   - Si c'est un match nul -> Réponds "MATCH NUL"
+   - Pour BTTS/Over/Under, utilise les termes standards
+
+4. **VÉRIFICATION FINALE :**
+   - Assure-toi que le nom de l'équipe dans ta réponse correspond bien à celle qui est pronostiquée gagnante
+   - Ne confonds JAMAIS domicile et extérieur
 
 FORMAT DE SORTIE (JSON SEULEMENT) :
 {
   "found": true/false,
-  "prediction_raw": "Le symbole ou texte exact que tu as vu",
-  "prediction_clear": "La traduction standardisée (ex: VICTOIRE DOMICILE)",
-  "score_exact": "Score si visible, sinon null"
+  "prediction_raw": "Le symbole ou texte exact que tu as vu (ex: '1', '2', 'X', '48%')",
+  "prediction_clear": "VICTOIRE [NOM ÉQUIPE] ou MATCH NUL ou LES DEUX MARQUENT, etc.",
+  "score_exact": "Score si visible (ex: '2-1'), sinon null"
+}
+
+EXEMPLE :
+Si tu vois que la colonne "2" ou "Away" est cochée pour le match ${homeTeam} vs ${awayTeam}, tu dois répondre :
+{
+  "found": true,
+  "prediction_raw": "2",
+  "prediction_clear": "VICTOIRE ${awayTeam.toUpperCase()}",
+  "score_exact": null
 }
 `
 
